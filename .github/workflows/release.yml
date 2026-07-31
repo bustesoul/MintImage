@@ -1,12 +1,22 @@
 name: Build and Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Build version (for example, 1.2.3)
+        required: true
+        default: '1.0.0'
+        type: string
   push:
     tags:
       - 'v*'
 
 permissions:
   contents: write
+
+env:
+  BUILD_VERSION_SOURCE: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
   build-windows:
@@ -21,7 +31,7 @@ jobs:
       - name: Prepare build version
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
+          $tag = $env:BUILD_VERSION_SOURCE
           $version = $tag -replace '^v',''
           "APP_VERSION=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
           "BUILD_NAME=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -56,8 +66,8 @@ jobs:
 
       - name: Prepare build version
         run: |
-          echo "APP_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-          echo "BUILD_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "APP_VERSION=${BUILD_VERSION_SOURCE}" >> "$GITHUB_ENV"
+          echo "BUILD_NAME=${BUILD_VERSION_SOURCE#v}" >> "$GITHUB_ENV"
           echo "BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
 
       - name: Restore Android signing
@@ -89,8 +99,8 @@ jobs:
 
       - name: Prepare build version
         run: |
-          echo "APP_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-          echo "BUILD_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "APP_VERSION=${BUILD_VERSION_SOURCE}" >> "$GITHUB_ENV"
+          echo "BUILD_NAME=${BUILD_VERSION_SOURCE#v}" >> "$GITHUB_ENV"
           echo "BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
 
       - run: flutter pub get
@@ -106,37 +116,39 @@ jobs:
           name: macos-arm64
           path: MintImage-macos-arm64.zip
 
-  # iOS packaging is temporarily disabled.
-  # build-ios:
-  #   runs-on: macos-latest
-  #   steps:
-  #     - uses: actions/checkout@v6
-  #
-  #     - uses: subosito/flutter-action@v2
-  #       with:
-  #         channel: stable
-  #
-  #     - name: Prepare build version
-  #       run: |
-  #         echo "APP_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-  #         echo "BUILD_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-  #         echo "BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
-  #
-  #     - run: flutter pub get
-  #     - run: flutter build ios --release --no-codesign --build-name "$BUILD_NAME" --build-number "$BUILD_NUMBER" --dart-define "APP_VERSION=$APP_VERSION"
-  #
-  #     - name: Archive iOS build
-  #       run: |
-  #         cd build/ios/iphoneos
-  #         zip -r ../../../MintImage-ios-nosign.zip Runner.app
-  #
-  #     - uses: actions/upload-artifact@v6
-  #       with:
-  #         name: ios-ipa
-  #         path: MintImage-ios-nosign.zip
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Prepare build version
+        run: |
+          echo "APP_VERSION=${BUILD_VERSION_SOURCE}" >> "$GITHUB_ENV"
+          echo "BUILD_NAME=${BUILD_VERSION_SOURCE#v}" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+
+      - run: flutter pub get
+      - run: flutter build ios --release --no-codesign --build-name "$BUILD_NAME" --build-number "$BUILD_NUMBER" --dart-define "APP_VERSION=$APP_VERSION"
+
+      - name: Package unsigned iOS IPA
+        run: |
+          cd build/ios/iphoneos
+          mkdir Payload
+          cp -R Runner.app Payload/
+          zip -r ../../../MintImage-ios-nosign.ipa Payload
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ios-ipa
+          path: MintImage-ios-nosign.ipa
 
   release:
-    needs: [build-windows, build-android, build-macos]
+    needs: [build-windows, build-android, build-macos, build-ios]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v7
@@ -151,3 +163,4 @@ jobs:
             MintImage-windows-x64.zip
             app-release.apk
             MintImage-macos-arm64.zip
+            MintImage-ios-nosign.ipa
